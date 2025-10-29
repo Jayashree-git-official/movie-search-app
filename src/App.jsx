@@ -13,6 +13,9 @@ const OMDB_API_KEY = "8495791e";
 const API_BASE_URL = `https://www.omdbapi.com/?apikey=${OMDB_API_KEY}`;
 const MOVIES_PER_PAGE = 10; // OMDB API standard page size
 
+// New: Default term to fetch results when the user hasn't searched yet (Netflix-like landing page)
+const DEFAULT_SEARCH_TERM = "popular"; 
+
 // --- UTILITY HOOKS ---
 
 /**
@@ -85,6 +88,8 @@ const useMovieData = () => {
 
     const fetchMovies = useCallback(async ({ s, type = 'any', page = 1 }) => {
         if (!s) {
+            // This should ideally not happen now that DEFAULT_SEARCH_TERM is used, 
+            // but it's a good guardrail.
             setResults([]);
             setTotalResults(0);
             return;
@@ -122,12 +127,16 @@ const useMovieData = () => {
                 setResults(data.Search || []);
                 setTotalResults(parseInt(data.totalResults, 10));
                 // Update URL params
-                navigate(`/?s=${encodeURIComponent(s)}&type=${type}&page=${page}`, { replace: true });
+                // Note: The URL is updated with the user's actual search term (or empty string if default), 
+                // NOT the DEFAULT_SEARCH_TERM, to keep the search bar empty if it was before.
+                const urlSearchTerm = s === DEFAULT_SEARCH_TERM ? '' : s;
+                navigate(`/?s=${encodeURIComponent(urlSearchTerm)}&type=${type}&page=${page}`, { replace: true });
             } else {
                 setResults([]);
                 setTotalResults(0);
                 setError(data.Error || "No movies found matching your criteria.");
-                navigate(`/?s=${encodeURIComponent(s)}&type=${type}&page=${page}`, { replace: true });
+                const urlSearchTerm = s === DEFAULT_SEARCH_TERM ? '' : s;
+                navigate(`/?s=${encodeURIComponent(urlSearchTerm)}&type=${type}&page=${page}`, { replace: true });
             }
         } catch (err) {
             console.error("API Fetch Error:", err);
@@ -139,6 +148,52 @@ const useMovieData = () => {
 
     return { results, totalResults, loading, error, fetchMovies };
 };
+
+// --- SPLASH SCREEN COMPONENT ---
+
+const LogoSplashScreen = ({ onFinish }) => {
+    useEffect(() => {
+        // Automatically hide the splash screen after 1.5 seconds
+        const timer = setTimeout(() => {
+            onFinish();
+        }, 1500); 
+
+        return () => clearTimeout(timer);
+    }, [onFinish]);
+
+    return (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black transition-opacity duration-1000 ease-in-out">
+            <style>
+                {`
+                    /* Keyframes for the pulsing animation on the logo */
+                    @keyframes pulse-logo {
+                        0%, 100% { 
+                            opacity: 1; 
+                            transform: scale(1);
+                        }
+                        50% { 
+                            opacity: 0.8; 
+                            transform: scale(1.05);
+                        }
+                    }
+                    .animate-pulse-logo {
+                        animation: pulse-logo 1.5s infinite ease-in-out;
+                    }
+                `}
+            </style>
+            <div className="flex flex-col items-center animate-pulse-logo">
+                <MonitorPlay className="w-24 h-24 sm:w-32 sm:h-32 text-red-600 fill-red-600/30 mb-4" />
+                <h1 className="text-6xl sm:text-8xl font-extrabold text-red-600 tracking-wider logo-font">
+                    CineStream
+                </h1>
+            </div>
+            <div className="mt-10 flex items-center text-gray-400">
+                <Loader2 className="w-5 h-5 text-red-600 animate-spin mr-2" />
+                <span className="text-lg">LOADING...</span>
+            </div>
+        </div>
+    );
+}
 
 // --- UTILITY COMPONENTS ---
 
@@ -392,11 +447,8 @@ const SuggestionsSearchForm = ({ initialSearch, initialType, onSearch }) => {
     const handleSubmit = (e) => {
         e.preventDefault();
         setIsInputFocused(false); // Hide suggestions on submit
-        if (searchTerm.trim()) {
-            onSearch({ s: searchTerm.trim(), type, page: 1 });
-        } else {
-            navigate(`/?s=&type=${type}&page=1`, { replace: true });
-        }
+        // Pass the current search term (can be empty) and let the parent handle the default logic
+        onSearch({ s: searchTerm.trim(), type, page: 1 });
     };
 
     const handleSuggestionClick = (title) => {
@@ -409,11 +461,8 @@ const SuggestionsSearchForm = ({ initialSearch, initialType, onSearch }) => {
     const handleTypeChange = (e) => {
         const newType = e.target.value;
         setType(newType);
-        if (searchTerm.trim()) {
-            onSearch({ s: searchTerm.trim(), type: newType, page: 1 });
-        } else {
-            navigate(`/?s=&type=${newType}&page=1`, { replace: true });
-        }
+        // If type changes, re-run search with current term (or empty, which triggers default content in parent)
+        onSearch({ s: searchTerm.trim(), type: newType, page: 1 });
     };
 
     const movieTypes = [
@@ -512,19 +561,33 @@ const SearchPage = () => {
     
     const { results, totalResults, loading, error, fetchMovies } = useMovieData();
 
+    // State to track if the current results are from the default placeholder search
+    const [isDefaultContent, setIsDefaultContent] = useState(false);
+
+    // Function to handle fetching, incorporating the default search term logic
+    const fetchContent = useCallback(({ s, type, page }) => {
+        const searchTermToUse = s.trim() || DEFAULT_SEARCH_TERM;
+        // Determine if we are showing the default content (i.e., user input was empty)
+        const isDefault = !s.trim(); 
+        
+        // fetchMovies will use searchTermToUse
+        fetchMovies({ s: searchTermToUse, type, page });
+        setIsDefaultContent(isDefault);
+    }, [fetchMovies]);
+
+
     // Effect to perform initial search based on URL params on first load
     useEffect(() => {
-        if (initialSearch) {
-            fetchMovies({ s: initialSearch, type: initialType, page: initialPage });
-        }
-    }, [initialSearch, initialType, initialPage, fetchMovies]);
+        // On initial load, use URL params, or the default term if URL is empty
+        fetchContent({ s: initialSearch, type: initialType, page: initialPage });
+    }, [initialSearch, initialType, initialPage, fetchContent]);
 
-    const handleSearch = ({ s, type, page }) => {
-        fetchMovies({ s, type, page });
-    };
+    // handleSearch is now just a wrapper for fetchContent
+    const handleSearch = fetchContent;
 
     const handlePageChange = (newPage) => {
-        fetchMovies({ s: initialSearch, type: initialType, page: newPage });
+        // Use the term from the URL (initialSearch) for pagination, which might be empty
+        fetchContent({ s: initialSearch, type: initialType, page: newPage });
     };
 
     const renderContent = () => {
@@ -552,7 +615,8 @@ const SearchPage = () => {
             );
         }
 
-        if (initialSearch && results.length === 0) {
+        // Logic for when an explicit, non-default search failed to find results.
+        if (!isDefaultContent && initialSearch && results.length === 0) {
             return (
                 <div className="text-center py-10 px-4 bg-gray-800 border border-gray-700 text-gray-300 rounded-xl max-w-xl mx-auto shadow-md">
                     <p className="font-bold text-lg mb-2">No Results Found</p>
@@ -560,23 +624,32 @@ const SearchPage = () => {
                 </div>
             );
         }
-
-        if (!initialSearch && results.length === 0) {
+        
+        // This handles cases where the default content fetch or an explicit search finished with no results
+        if (results.length === 0) {
              return (
                 <div className="text-center py-20 px-4 bg-gray-900 text-white rounded-3xl max-w-3xl mx-auto shadow-xl border border-gray-700">
                     <p className="font-extrabold text-3xl mb-3 flex items-center justify-center logo-font">
-                        <MonitorPlay className="w-8 h-8 mr-3 text-red-500 fill-red-200"/> WELCOME TO CINESTREAM!
+                        <MonitorPlay className="w-8 h-8 mr-3 text-red-500 fill-red-200"/> DATA UNAVAILABLE
                     </p>
-                    <p className="text-lg text-gray-400">Enter a title above to begin your cinematic journey. The search bar now suggests popular matches as you type!</p>
+                    <p className="text-lg text-gray-400">Could not retrieve initial movie data. Please try searching for a title instead.</p>
                 </div>
             );
         }
+
 
         return (
             <>
                 <div className="text-center mb-10">
                     <h2 className="text-xl text-gray-400 font-medium logo-font tracking-wider">
-                        FOUND <span className="font-extrabold text-red-500">{totalResults.toLocaleString()}</span> RESULTS FOR: <span className="font-semibold text-white">"{initialSearch.toUpperCase()}"</span>
+                        {isDefaultContent ? (
+                            <span className='text-red-500'>NOW STREAMING POPULAR TITLES</span>
+                        ) : (
+                            <>
+                                FOUND <span className="font-extrabold text-red-500">{totalResults.toLocaleString()}</span> RESULTS FOR: <span className="font-semibold text-white">"{initialSearch.toUpperCase()}"</span>
+                            </>
+                        )}
+                        
                     </h2>
                     <p className="text-sm text-gray-500 mt-1">PAGE {initialPage} OF {Math.ceil(totalResults / MOVIES_PER_PAGE)}</p>
                 </div>
@@ -823,6 +896,19 @@ const FavoritesPage = () => {
 // --- MAIN APP COMPONENT ---
 
 const App = () => {
+    const [showSplash, setShowSplash] = useState(true);
+
+    // This effect ensures that the splash screen only shows on the very first render.
+    // It's a simple, time-based implementation for a clean intro.
+    useEffect(() => {
+        // You can control the duration here
+        const timer = setTimeout(() => {
+            setShowSplash(false);
+        }, 1500); 
+
+        return () => clearTimeout(timer);
+    }, []);
+
     return (
         <Router>
             <style>
@@ -856,6 +942,9 @@ const App = () => {
                     }
                 `}
             </style>
+            
+            {showSplash && <LogoSplashScreen onFinish={() => setShowSplash(false)} />}
+
             <FavoritesProvider>
                 <Navbar />
                 <div className="min-h-[calc(100vh-80px)]">
